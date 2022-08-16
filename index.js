@@ -2,6 +2,7 @@
 
 var fs = require('fs');
 var stripAnsi = require('strip-ansi');
+var t = require('table')
 var term = 13; // carriage return
 var autocompleteStrategies = ['cycle', 'suggest'];
 
@@ -17,6 +18,51 @@ function commonStartingSubstring(autocompleteMatches) {
     charIndex++;
   
   return first.substring(0, charIndex);
+}
+
+// takes a list of auto-complete matches and converts them into an [n x 3] table 
+// of strings 
+function tablify(autocompleteMatches) {
+  var result = [];
+  var currentRow = [];
+
+  for (var i = 0; i < autocompleteMatches.length; ++i) {
+    currentRow.push(autocompleteMatches[i]);
+
+    if(currentRow.length === 3) {
+      result.push(currentRow);
+      currentRow = [];
+    }
+  }
+
+  if(currentRow.length > 0) {
+    // fill in any missing cells - table requires consistent cell counts per row 
+    for(var emptyCells = 3 - currentRow.length; emptyCells > 0; --emptyCells) {
+      currentRow.push("");
+    }
+
+    result.push(currentRow);
+  }
+
+  return {
+    output: t.table(result, {
+      border: t.getBorderCharacters('void'),
+      columnDefault: {
+          paddingLeft: 2,
+          paddingRight: 2
+      },
+      drawHorizontalLine: () => false
+    }),
+    rowCount: result.length
+  };
+}
+
+function saveCursorPosition() {
+  process.stdout.write('\u001b[s');
+}
+
+function restoreCursorPosition() {
+  process.stdout.write('\u001B[u');
 }
 
 /**
@@ -71,6 +117,8 @@ function create(config) {
   function prompt(ask, value, opts) {
     var insert = 0, savedinsert = 0, res, i, savedstr;
     opts = opts || {};
+    var numRowsToClear = 0;
+
 
     if (Object(ask) === ask) {
       opts = ask;
@@ -118,7 +166,7 @@ function create(config) {
     function autocompleteCycle() {
       // first TAB hit, save off original input 
       if(autoCompleteSearchTerm === undefined)
-      autoCompleteSearchTerm = str;
+        autoCompleteSearchTerm = str;
 
       res = autocomplete(autoCompleteSearchTerm);
 
@@ -134,6 +182,39 @@ function create(config) {
         str = item;
 
         insert = item.length;
+      }
+    }
+
+    function autocompleteSuggest() {
+      res = autocomplete(str);
+
+      if (res.length == 0) {
+        process.stdout.write('\t');
+        return;
+      }
+
+      insert = str.length;
+      var tableData = tablify(res);
+      numRowsToClear = tableData.rowCount;
+
+      saveCursorPosition();
+      process.stdout.write('\r\u001b[K' + ask + str + "\n" + tableData.output);
+      restoreCursorPosition();
+    }
+
+    function clearSuggestTable() {
+      if(numRowsToClear) {
+        saveCursorPosition();
+
+        // position as far left as we can 
+        process.stdout.write('\u001B[' + process.stdout.columns + 'D');
+
+        for(var moveCount = 0; moveCount < numRowsToClear; ++moveCount) {
+          process.stdout.write('\u001B[1B');
+          process.stdout.write('\u001b[K');
+        }
+        
+        restoreCursorPosition();
       }
     }
 
@@ -219,6 +300,8 @@ function create(config) {
 
       // catch the terminating character
       if (character == term) {
+        clearSuggestTable();
+        
         fs.closeSync(fd);
         if (!history) break;
         if (!masked && str.length) history.push(str);
@@ -233,6 +316,7 @@ function create(config) {
             autocompleteCycle();
             break;
           case "suggest":
+            autocompleteSuggest();
             break;
         }
       } else {
@@ -240,6 +324,8 @@ function create(config) {
         autoCompleteSearchTerm = undefined; 
         // reset cycle - next time user hits tab might yield a different result list 
         cycle = 0;
+
+        clearSuggestTable();
       }
 
       if (character == 127 || (process.platform == 'win32' && character == 8)) { //backspace
