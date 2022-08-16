@@ -3,13 +3,29 @@
 var fs = require('fs');
 var stripAnsi = require('strip-ansi');
 var term = 13; // carriage return
+var autocompleteStrategies = ['cycle', 'suggest'];
 
+// credit to kennebec, et. al. 
+// https://stackoverflow.com/a/1917041/3578493
+function commonStartingSubstring(autocompleteMatches) {
+  var sorted = autocompleteMatches.concat().sort();
+  var first = sorted[0];
+  var last = sorted[sorted.length - 1];
+  var charIndex = 0;
+
+  while(charIndex < first.length && first.charAt(i)=== last.charAt(i)) 
+    charIndex++;
+  
+  return first.substring(0, charIndex);
+}
 
 /**
  * create -- sync function for reading user input from stdin
  * @param   {Object} config {
  *   sigint: {Boolean} exit on ^C
  *   autocomplete: {StringArray} function({String})
+ *   completeType: {String} determines the behavior of autocomplete, can be "cycle" or "suggest"
+ *                 default behavior is "cycle" for backwards compatibility 
  *   history: {String} a history control object (see `prompt-sync-history`)
  * }
  * @returns {Function} prompt function
@@ -24,6 +40,9 @@ function create(config) {
   var eot = config.eot;
   var autocomplete = config.autocomplete =
     config.autocomplete || function(){return []};
+  var completeType = config.completeType = config.completeType ? 
+    config.completeType.toLowerCase() : 
+    "cycle";
   var history = config.history;
   prompt.history = history || {save: function(){}};
   prompt.hide = function (ask) { return prompt(ask, {echo: ''}) };
@@ -40,6 +59,8 @@ function create(config) {
    *   value: {String} initial value for the prompt
    *   ask: {String} opening question/statement to prompt for, does not override ask param
    *   autocomplete: {StringArray} function({String})
+   *   completeType: {String} determines the behavior of autocomplete, can be "cycle" or "suggest"
+   *                 default behavior is "cycle" for backwards compatibility 
    * }
    *
    * @returns {string} Returns the string input or (if sigint === false)
@@ -62,7 +83,19 @@ function create(config) {
     var echo = opts.echo;
     var masked = 'echo' in opts;
     autocomplete = opts.autocomplete || autocomplete;
+    completeType = opts.completeType ? 
+      opts.completeType.toLowerCase() : 
+      completeType;
 
+    if (!autocompleteStrategies.includes(completeType))
+      throw new Error(
+        "value provided for completeType '" +
+          completeType +
+          "' is invalid. Expecting one of [" +
+          autocompleteStrategies.join(", ") + 
+          "]"
+      );
+    
     var fd = (process.platform === 'win32') ?
       process.stdin.fd :
       fs.openSync('/dev/tty', 'rs');
@@ -81,6 +114,28 @@ function create(config) {
     }
 
     var cycle = 0;
+
+    function autocompleteCycle() {
+      // first TAB hit, save off original input 
+      if(autoCompleteSearchTerm === undefined)
+      autoCompleteSearchTerm = str;
+
+      res = autocomplete(autoCompleteSearchTerm);
+
+      if (res.length == 0) {
+        process.stdout.write('\t');
+        return;
+      }
+
+      var item = res[cycle++] || res[cycle = 0, cycle++];
+
+      if (item) {
+        process.stdout.write('\r\u001b[K' + ask + item);
+        str = item;
+
+        insert = item.length;
+      }
+    }
 
     while (true) {
       read = fs.readSync(fd, buf, 0, 3);
@@ -173,24 +228,12 @@ function create(config) {
 
       // catch a TAB and implement autocomplete
       if (character == 9) { // TAB
-        // first TAB hit, save off original input 
-        if(autoCompleteSearchTerm === undefined)
-          autoCompleteSearchTerm = str;
-
-        res = autocomplete(autoCompleteSearchTerm);
-
-        if (res.length == 0) {
-          process.stdout.write('\t');
-          continue;
-        }
-
-        var item = res[cycle++] || res[cycle = 0, cycle++];
-
-        if (item) {
-          process.stdout.write('\r\u001b[K' + ask + item);
-          str = item;
-
-          insert = item.length;
+        switch(completeType) {
+          case "cycle":
+            autocompleteCycle();
+            break;
+          case "suggest":
+            break;
         }
       } else {
         // user entered anything other than TAB; reset from last use of autocomplete 
